@@ -26,7 +26,7 @@ db.connect()
 app.get("/", async (req, res) => {
   try {
     const items = await db.query("SELECT * FROM list_items ORDER BY id LIMIT 50");
-    res.render("index.ejs", { listTitle: "Today", listItems: items.rows });
+    res.json({ listTitle: "Today", listItems: items.rows });
   } catch (err) {
     console.error("Database fetch error:", err);
     res.status(500).send("Database error");
