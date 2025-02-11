@@ -7,20 +7,27 @@ const app = express();
 const port = 3000;
 env.config();
 
-const db=new pg.Client(
-  {
-    user : process.env.DB_USER,
-    host : process.env.DB_HOST,
-    password : process.env.DB_PASSWORD,
-    database : process.env.DB_DATABASE,
-    port :  process.env.DB_PORT,
-    ssl: { rejectUnauthorized: false } 
-  }
-);
+const db = new pg.Client({
+  user: process.env.DB_USER,
+  host: process.env.DB_HOST,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_DATABASE,
+  port: process.env.DB_PORT,
+  ssl: { rejectUnauthorized: false },
+  keepAlive: true, // Ensures connection persistence
+});
 
-db.connect()
-  .then(() => console.log("Connected to the database"))
-  .catch((err) => console.error("Connection error", err.stack));
+async function connectDB() {
+  try {
+    await db.connect();
+    console.log("Connected to the database");
+  } catch (err) {
+    console.error("Connection error", err.stack);
+  }
+}
+
+connectDB();
+
 
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static("public"));
@@ -48,10 +55,9 @@ app.post("/edit", async(req, res) => {
   res.redirect("/");
 });
 
-app.post("/delete", (req, res) => {
-  const itemto_delete=req.body["deleteItemId"];
-  db.query("delete from list_items where id=$1",[itemto_delete]);
-  console.log(req.body);
+app.post("/delete", async (req, res) => {
+  const itemto_delete = req.body["deleteItemId"];
+  await db.query("DELETE FROM list_items WHERE id=$1", [itemto_delete]);
   res.redirect("/");
 });
 
