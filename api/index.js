@@ -1,3 +1,4 @@
+// api/index.js
 import express from "express";
 import bodyParser from "body-parser";
 import pg from "pg";
@@ -16,107 +17,112 @@ const app = express();
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, '../views'));
 
-// Middleware
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Initialize pool outside of request handlers
-const pool = new pg.Pool({
+// Detailed connection configuration
+const dbConfig = {
   user: process.env.DB_USER,
   host: process.env.DB_HOST,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_DATABASE,
   port: process.env.DB_PORT,
-  ssl: { rejectUnauthorized: false },
-  max: 1,
-  idleTimeoutMillis: 20000, // Reduced idle timeout
-  connectionTimeoutMillis: 5000, // Added connection timeout
-  statement_timeout: 4000, // Added query timeout
-  query_timeout: 4000 // Added query timeout
+  ssl: true,
+  connectionTimeoutMillis: 10000,
+};
+
+// Log database configuration (excluding sensitive data)
+console.log('Database Config:', {
+  host: dbConfig.host,
+  port: dbConfig.port,
+  database: dbConfig.database,
+  ssl: dbConfig.ssl
 });
 
-// Warm up pool with initial connection
-let warmupPromise = pool.connect().then(client => {
-  client.release();
-  console.log('DB connection pool warmed up');
-}).catch(err => {
-  console.error('Initial pool warmup failed:', err);
+const pool = new pg.Pool(dbConfig);
+
+// Test database connection
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle client', err);
 });
 
-// Routes with timeout handling
+// Main route with better error handling
 app.get("/", async (req, res) => {
-  const timeout = setTimeout(() => {
-    res.status(503).render('error', { 
-      error: 'Service temporarily unavailable. Please try again.' 
-    });
-  }, 8000); // 8 second timeout
-
   let client;
+  
   try {
-    // Wait for warmup to complete first
-    await warmupPromise;
-    
+    // Test connection first
     client = await pool.connect();
-    const query = await client.query("SELECT * FROM list_items ORDER BY id LIMIT 50");
+    console.log('Successfully connected to database');
     
-    clearTimeout(timeout);
+    // Simple query to test database
+    const testQuery = await client.query('SELECT NOW()');
+    console.log('Test query successful:', testQuery.rows[0]);
     
-    if (!res.headersSent) {
-      res.render('index', { 
-        listTitle: "Today",
-        listItems: query.rows 
-      });
-    }
+    // Main query
+    const items = await client.query("SELECT * FROM list_items ORDER BY id LIMIT 50");
+    console.log(`Retrieved ${items.rows.length} items from database`);
+    
+    res.render('index', { 
+      listTitle: "Today",
+      listItems: items.rows 
+    });
+    
   } catch (err) {
-    clearTimeout(timeout);
-    console.error("Error:", err);
+    console.error('Detailed error:', {
+      message: err.message,
+      code: err.code,
+      stack: err.stack
+    });
     
-    if (!res.headersSent) {
-      res.render('error', { 
-        error: 'Database error. Please try again.' 
-      });
+    let errorMessage;
+    switch(err.code) {
+      case 'ECONNREFUSED':
+        errorMessage = 'Unable to connect to database server';
+        break;
+      case '28P01':
+        errorMessage = 'Database authentication failed';
+        break;
+      case '3D000':
+        errorMessage = 'Database does not exist';
+        break;
+      case '42P01':
+        errorMessage = 'Table does not exist';
+        break;
+      default:
+        errorMessage = `Database error (${err.code}): ${err.message}`;
     }
+    
+    res.render('error', { 
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? err.message : null
+    });
+    
   } finally {
     if (client) {
-      client.release(true); // Force release
+      client.release();
     }
   }
 });
 
-// Quick health check endpoint
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
-});
-
-// Simplified API endpoint with timeout
-app.get("/api/items", async (req, res) => {
-  const timeout = setTimeout(() => {
-    if (!res.headersSent) {
-      res.status(503).json({ error: 'Service temporarily unavailable' });
-    }
-  }, 8000);
-
-  let client;
+// Health check endpoint
+app.get("/api/health", async (req, res) => {
   try {
-    client = await pool.connect();
-    const query = await client.query("SELECT * FROM list_items ORDER BY id LIMIT 50");
-    clearTimeout(timeout);
-    
-    if (!res.headersSent) {
-      res.json({ listItems: query.rows });
-    }
+    const client = await pool.connect();
+    const result = await client.query('SELECT NOW()');
+    client.release();
+    res.json({ 
+      status: "ok",
+      timestamp: result.rows[0].now,
+      database: "connected"
+    });
   } catch (err) {
-    clearTimeout(timeout);
-    console.error("API Error:", err);
-    
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Database error' });
-    }
-  } finally {
-    if (client) {
-      client.release(true);
-    }
+    res.status(500).json({ 
+      status: "error",
+      message: err.message,
+      code: err.code
+    });
   }
 });
 
